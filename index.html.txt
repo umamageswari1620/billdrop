@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>BillDrop</title>
+</head>
+<body>
+  <h1>BillDrop</h1>
+  <p>Supplier bills-ah clean records-aa maathunga, minutes-la.</p>
+  <button>Upload Bill</button>
+</body>
+</html>
