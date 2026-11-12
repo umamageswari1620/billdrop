@@ -1,11 +1,85 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BillDrop</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 420px; margin: 40px auto; padding: 0 16px; }
+    input { display: block; width: 100%; margin: 8px 0; padding: 8px; box-sizing: border-box; }
+    button { padding: 8px 16px; margin-top: 8px; }
+    .error { color: #b00020; margin-top: 12px; }
+  </style>
 </head>
 <body>
   <h1>BillDrop</h1>
   <p>Supplier bills-ah clean records-aa maathunga, minutes-la.</p>
-  <button>Upload Bill</button>
+
+  <div id="login-box">
+    <h2>Login</h2>
+    <input id="email" type="email" placeholder="Email">
+    <input id="password" type="password" placeholder="Password">
+    <button id="login-btn">Login</button>
+    <div id="message" class="error"></div>
+  </div>
+
+  <div id="info-box" style="display:none;">
+    <h2>Welcome</h2>
+    <p>Email: <span id="user-email"></span></p>
+    <p>Role: <span id="user-role"></span></p>
+    <button id="logout-btn">Logout</button>
+  </div>
+
+  <script>
+    const SUPABASE_URL = https://aqgatfdlthhctqlqkkhp.supabase.co/rest/v1/
+    const SUPABASE_KEY = sb_publishable_7AtV3H0JpUPdzbLttAb2Ew_gGqeCKQF
+
+    const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    const loginBox = document.getElementById('login-box');
+    const infoBox = document.getElementById('info-box');
+    const message = document.getElementById('message');
+
+    async function login() {
+      message.textContent = '';
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+
+      const { data, error } = await db.auth.signInWithPassword({ email, password });
+      if (error) { message.textContent = 'Login fail: ' + error.message; return; }
+
+      const { data: person, error: personError } = await db
+        .from('people')
+        .select('name, email, role')
+        .eq('login_id', data.user.id)
+        .maybeSingle();
+
+      if (personError) {
+        message.textContent = 'People read error: ' + personError.message;
+        await db.auth.signOut();
+        return;
+      }
+      if (!person) {
+        message.textContent = 'Intha account BillDrop people list-la illai.';
+        await db.auth.signOut();
+        return;
+      }
+
+      document.getElementById('user-email').textContent = person.email;
+      document.getElementById('user-role').textContent = person.role;
+      loginBox.style.display = 'none';
+      infoBox.style.display = 'block';
+    }
+
+    async function logout() {
+      await db.auth.signOut();
+      document.getElementById('password').value = '';
+      infoBox.style.display = 'none';
+      loginBox.style.display = 'block';
+    }
+
+    document.getElementById('login-btn').addEventListener('click', login);
+    document.getElementById('logout-btn').addEventListener('click', logout);
+  </script>
 </body>
 </html>
