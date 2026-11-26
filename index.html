@@ -6,16 +6,18 @@
   <title>BillDrop</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 560px; margin: 40px auto; padding: 0 16px; }
-    input, textarea { display: block; width: 100%; margin: 6px 0; padding: 8px; box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; max-width: 680px; margin: 40px auto; padding: 0 16px; }
+    input { display: block; width: 100%; margin: 4px 0 8px; padding: 6px; box-sizing: border-box; }
     button { padding: 8px 14px; margin: 6px 6px 6px 0; }
-    .error { color: #b00020; margin-top: 10px; }
-    .ok { color: #0a6b2d; margin-top: 10px; }
-    .warn { color: #b26a00; margin-top: 10px; }
-    .row { display: flex; gap: 6px; }
-    .row input { margin: 4px 0; }
+    .error { color: #b00020; } .ok { color: #0a6b2d; } .warn { color: #b26a00; }
     .box { border: 1px solid #ddd; padding: 12px; margin-top: 12px; border-radius: 6px; }
+    .card { border: 2px solid #ccc; padding: 10px; margin: 10px 0; border-radius: 6px; }
+    .card.problem { border-color: #b00020; }
+    .card.saved { border-color: #0a6b2d; }
+    .card.failed { border-color: #666; background: #f3f3f3; }
+    small { color: #555; }
   </style>
 </head>
 <body>
@@ -36,32 +38,19 @@
     <p>Role: <span id="user-role"></span></p>
 
     <div class="box">
-      <h2>1. Bill upload</h2>
-      <input id="bill-file" type="file" accept="image/*">
-      <button id="read-btn">Read Bill</button>
-      <p id="read-status"></p>
-      <details>
-        <summary>OCR text (check ku)</summary>
-        <pre id="ocr-text" style="white-space: pre-wrap;"></pre>
-      </details>
+      <h2>Batch upload</h2>
+      <input id="batch-files" type="file" accept="image/*" multiple>
+      <button id="process-btn">Process batch</button>
+      <button id="save-all-btn">Save All Clean Bills</button>
+      <button id="excel-btn">Download Excel</button>
+      <p id="batch-msg"></p>
+      <div id="cards"></div>
     </div>
 
-    <div class="box" id="review-box" style="display:none;">
-      <h2>2. Review</h2>
-      <label>Supplier</label>
-      <input id="f-supplier">
-      <label>Bill number</label>
-      <input id="f-bill-number">
-      <label>Bill date (YYYY-MM-DD)</label>
-      <input id="f-bill-date" placeholder="2026-10-12">
-      <label>Lines</label>
-      <div id="lines"></div>
-      <button id="add-line-btn">+ Line add</button>
-      <label>Total</label>
-      <input id="f-total" type="number" step="0.01">
-      <div id="check-msg"></div>
-      <button id="save-btn">Save to database</button>
-      <p id="save-status"></p>
+    <div class="box">
+      <h2>Supplier totals (indha maasam)</h2>
+      <button id="totals-btn">Load totals</button>
+      <ul id="totals"></ul>
     </div>
 
     <button id="logout-btn">Logout</button>
@@ -70,221 +59,274 @@
   <script>
     const SUPABASE_URL = 'https://aqgatfdlthhctqlqkkhp.supabase.co';
     const SUPABASE_KEY = 'sb_publishable_7AtV3H0JpUPdzbLttAb2Ew_gGqeCKQF';
-
     const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-    const $ = (id) => document.getElementById(id);
+    const $ = id => document.getElementById(id);
 
-    let session = null;
-    let currentPerson = null;
-    let currentFile = null;
+    let session = null, person = null, batchId = null;
+    let cards = [], dbKeys = new Set();
 
+    const norm = s => (s || '').toLowerCase().replace(/\s+/g, '');
+    const keyOf = c => norm(c.supplier) + '|' + norm(c.bill_number);
+    const esc = s => String(s ?? '').replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+    const round2 = n => Math.round(n * 100) / 100;
+    const linesTotal = c => round2(c.lines.reduce((s, l) => s + (Number(l.amount) || 0), 0));
+    const msg = (t, cls = 'error') => { $('batch-msg').className = cls; $('batch-msg').textContent = t; };
     async function login() {
       $('message').textContent = '';
-      const email = $('email').value.trim();
-      const password = $('password').value;
-
-      const { data, error } = await db.auth.signInWithPassword({ email, password });
+      const { data, error } = await db.auth.signInWithPassword({
+        email: $('email').value.trim(), password: $('password').value
+      });
       if (error) { $('message').textContent = 'Login fail: ' + error.message; return; }
 
-      const { data: person, error: personError } = await db
-        .from('people')
-        .select('id, name, email, role')
-        .eq('login_id', data.user.id)
-        .maybeSingle();
+      const { data: p, error: pe } = await db.from('people')
+        .select('id, name, email, role').eq('login_id', data.user.id).maybeSingle();
+      if (pe) { $('message').textContent = 'People read error: ' + pe.message; await db.auth.signOut(); return; }
+      if (!p) { $('message').textContent = 'Intha account BillDrop people list-la illai.'; await db.auth.signOut(); return; }
 
-      if (personError) { $('message').textContent = 'People read error: ' + personError.message; await db.auth.signOut(); return; }
-      if (!person) { $('message').textContent = 'Intha account BillDrop people list-la illai.'; await db.auth.signOut(); return; }
-
-      session = data.session;
-      currentPerson = person;
-      $('user-email').textContent = person.email;
-      $('user-role').textContent = person.role;
-
-      if (person.role === 'manager') {
-        $('read-btn').disabled = true;
-        $('save-btn').disabled = true;
-        $('read-status').textContent = 'Manager-ku bill upload/save permission illai.';
+      session = data.session; person = p;
+      $('user-email').textContent = p.email;
+      $('user-role').textContent = p.role;
+      if (p.role !== 'accountant') {
+        $('process-btn').disabled = true; $('save-all-btn').disabled = true;
+        msg('Manager-ku upload/save permission illai.', 'warn');
       }
-
       $('login-box').style.display = 'none';
       $('info-box').style.display = 'block';
     }
 
     async function logout() {
       await db.auth.signOut();
-      session = null;
-      currentPerson = null;
+      session = null; person = null; batchId = null; cards = [];
       $('password').value = '';
-      $('review-box').style.display = 'none';
+      $('cards').innerHTML = '';
       $('info-box').style.display = 'none';
       $('login-box').style.display = 'block';
     }
 
-    async function readBill() {
-      currentFile = $('bill-file').files[0];
-      const status = $('read-status');
-      if (!currentFile) { status.className = 'error'; status.textContent = 'Modhalla bill file select pannunga.'; return; }
+    async function loadDbKeys() {
+      const [{ data: sups }, { data: bills }] = await Promise.all([
+        db.from('suppliers').select('id, name'),
+        db.from('bills').select('bill_number, supplier_id').not('bill_number', 'is', null)
+      ]);
+      const names = Object.fromEntries((sups || []).map(s => [s.id, s.name]));
+      dbKeys = new Set((bills || []).map(b => norm(names[b.supplier_id]) + '|' + norm(b.bill_number)));
+    }
 
-      status.className = '';
-      status.textContent = 'OCR nadakkudhu... 20-30 seconds aagum.';
-      let text = '';
-      try {
-        const result = await Tesseract.recognize(currentFile, 'eng');
-        text = result.data.text || '';
-        $('ocr-text').textContent = text;
-      } catch (e) {
-        status.className = 'warn';
-        status.textContent = 'OCR fail. Fields-ah kaiyaala type pannunga.';
-        showReview(null);
-        return;
+    function computeProblem(c) {
+      const probs = [];
+      if (c.aiNote) probs.push(c.aiNote);
+      if (!c.supplier.trim()) probs.push('Supplier name illai');
+      const diff = round2((Number(c.total) || 0) - linesTotal(c));
+      if (Math.abs(diff) > 1) probs.push('Total is off by ₹' + Math.abs(diff));
+      if (c.bill_number && c.supplier) {
+        const k = keyOf(c);
+        if (dbKeys.has(k)) probs.push('Already entered (database-la irukku)');
+        const i = cards.indexOf(c);
+        const earlier = cards.slice(0, i).some(o => o.status !== 'failed' && o.bill_number && keyOf(o) === k);
+        if (earlier) probs.push('Same batch-la already irukku');
       }
-
-      status.textContent = 'AI-la fields edukkudhu...';
-      let parsed = null;
-      try {
-        const res = await fetch(SUPABASE_URL + '/functions/v1/parse-bill', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': SUPABASE_KEY,
-            'Authorization': 'Bearer ' + session.access_token
-          },
-          body: JSON.stringify({ text })
-        });
-        const json = await res.json();
-        parsed = json.ok ? json.parsed : null;
-      } catch (e) {
-        parsed = null;
-      }
-
-      if (parsed) {
-        status.className = 'ok';
-        status.textContent = 'AI fields edukkiradhu. Check panni Save pannunga.';
-      } else {
-        status.className = 'warn';
-        status.textContent = 'AI fields edukka mudiyala. Kaiyaala type pannunga.';
-      }
-      showReview(parsed);
+      return probs.join(' | ');
     }
 
-    function showReview(p) {
-      $('review-box').style.display = 'block';
-      $('f-supplier').value = p?.supplier || '';
-      $('f-bill-number').value = p?.bill_number || '';
-      $('f-bill-date').value = p?.bill_date || '';
-      $('f-total').value = p?.total ?? '';
-      $('lines').innerHTML = '';
-      const lines = Array.isArray(p?.lines) ? p.lines : [];
-      if (lines.length === 0) addLine('', '');
-      lines.forEach(l => addLine(l.description || '', l.amount ?? ''));
-      $('save-status').textContent = '';
-      runChecks();
-    }
+    async function processCard(c) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          c.status = 'reading'; renderCards();
+          const r = await Tesseract.recognize(c.file, 'eng');
+          c.ocr_text = r.data.text || '';
 
-    function addLine(desc, amount) {
-      const div = document.createElement('div');
-      div.className = 'row';
-      div.innerHTML =
-        '<input class="l-desc" placeholder="Description" value="">' +
-        '<input class="l-amt" type="number" step="0.01" placeholder="Amount" style="max-width:120px">' +
-        '<button type="button" class="l-del">X</button>';
-      div.querySelector('.l-desc').value = desc;
-      div.querySelector('.l-amt').value = amount;
-      div.querySelector('.l-del').onclick = () => { div.remove(); runChecks(); };
-      div.querySelectorAll('input').forEach(i => i.addEventListener('input', runChecks));
-      $('lines').appendChild(div);
-    }
+          const res = await fetch(SUPABASE_URL + '/functions/v1/parse-bill', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY,
+                       'Authorization': 'Bearer ' + session.access_token },
+            body: JSON.stringify({ text: c.ocr_text })
+          });
+          const json = await res.json();
 
-    function getLines() {
-      return [...document.querySelectorAll('#lines .row')]
-        .map(r => ({
-          description: r.querySelector('.l-desc').value.trim(),
-          amount: Number(r.querySelector('.l-amt').value) || 0
-        }))
-        .filter(l => l.description || l.amount);
-    }
-
-    function runChecks() {
-      const lines = getLines();
-      const linesTotal = lines.reduce((s, l) => s + l.amount, 0);
-      const total = Number($('f-total').value) || 0;
-      const diff = Math.round((total - linesTotal) * 100) / 100;
-      const msg = $('check-msg');
-      if (Math.abs(diff) > 1) {
-        msg.className = 'error';
-        msg.textContent = 'Total is off by ₹' + Math.abs(diff) + '. (Lines total: ₹' + linesTotal + ')';
-      } else {
-        msg.className = 'ok';
-        msg.textContent = 'Lines total: ₹' + linesTotal + ' (total-oda match aagudhu)';
+          if (!json.ok) {
+            c.aiNote = 'AI fields edukka mudiyala, kaiyaala type pannunga';
+            c.supplier = ''; c.bill_number = ''; c.bill_date = ''; c.total = 0; c.lines = [];
+          } else {
+            const p = json.parsed;
+            c.supplier = p.supplier || '';
+            c.bill_number = p.bill_number || '';
+            c.bill_date = p.bill_date || '';
+            c.total = Number(p.total) || 0;
+            c.lines = Array.isArray(p.lines) ? p.lines : [];
+          }
+          return;
+        } catch (e) {
+          if (attempt === 3) { c.status = 'failed'; c.aiNote = 'Read fail: ' + e.message; return; }
+          await new Promise(r => setTimeout(r, 1500));
+        }
       }
     }
 
-    async function saveBill() {
-      const status = $('save-status');
-      if (currentPerson.role !== 'accountant') { status.className = 'error'; status.textContent = 'Accountant mattum save panna mudiyum.'; return; }
+    async function processBatch() {
+      const files = [...$('batch-files').files];
+      if (!files.length) return msg('Bill files select pannunga.');
+      if (files.length > 20) return msg('Oru murai max 20 files.');
 
-      const supplierName = $('f-supplier').value.trim();
-      const billNumber = $('f-bill-number').value.trim();
-      const billDate = $('f-bill-date').value.trim() || null;
-      const total = Number($('f-total').value) || 0;
-      const lines = getLines();
-      const linesTotal = Math.round(lines.reduce((s, l) => s + l.amount, 0) * 100) / 100;
-      const diff = Math.round((total - linesTotal) * 100) / 100;
-      const problem = Math.abs(diff) > 1 ? 'Total is off by ₹' + Math.abs(diff) : null;
+      $('process-btn').disabled = true;
+      batchId = null; cards = [];
+      await loadDbKeys();
+      files.forEach((f, i) => cards.push({
+        i, file: f, status: 'waiting', supplier: '', bill_number: '', bill_date: '',
+        total: 0, lines: [], ocr_text: '', aiNote: '', saved_bill_id: null
+      }));
+      renderCards();
 
-      if (!supplierName) { status.className = 'error'; status.textContent = 'Supplier name venum.'; return; }
-
-      status.className = 'ok';
-      status.textContent = 'Saving...';
-
-      let supplierId = null;
-      const { data: existing } = await db.from('suppliers').select('id').eq('name', supplierName).maybeSingle();
-      if (existing) {
-        supplierId = existing.id;
-      } else {
-        const { data: created, error: supErr } = await db.from('suppliers').insert({ name: supplierName }).select().single();
-        if (supErr) { status.className = 'error'; status.textContent = 'Supplier save fail: ' + supErr.message; return; }
-        supplierId = created.id;
+      for (let n = 0; n < cards.length; n++) {
+        msg('Processing ' + (n + 1) + ' / ' + cards.length + ' ...', 'warn');
+        await processCard(cards[n]);
+        renderCards();
+      }
+      renderCards();
+      msg('Batch mudinjiduchu.', 'ok');
+      $('process-btn').disabled = false;
+    }
+          
+    async function insertBill(c) {
+      if (!batchId) {
+        const { data, error } = await db.from('batches').insert({ uploaded_by: person.id }).select().single();
+        if (error) return msg('Batch save fail: ' + error.message);
+        batchId = data.id;
       }
 
-      const { data: batch, error: batchError } = await db
-        .from('batches').insert({ uploaded_by: currentPerson.id }).select().single();
-      if (batchError) { status.className = 'error'; status.textContent = 'Batch save fail: ' + batchError.message; return; }
-
-      const { data: bill, error: billError } = await db
-        .from('bills')
-        .insert({
-          batch_id: batch.id,
-          supplier_id: supplierId,
-          bill_number: billNumber || null,
-          bill_date: billDate,
-          total: total,
-          lines_total: linesTotal,
-          file_path: currentFile ? 'uploads/' + currentFile.name : null,
-          ocr_text: $('ocr-text').textContent || null,
-          status: problem ? 'problem' : 'saved',
-          problem: problem,
-          saved_at: new Date().toISOString()
-        })
-        .select().single();
-      if (billError) { status.className = 'error'; status.textContent = 'Bill save fail: ' + billError.message; return; }
-
-      if (lines.length > 0) {
-        const rows = lines.map(l => ({ bill_id: bill.id, description: l.description, amount: l.amount }));
-        const { error: lineError } = await db.from('bill_lines').insert(rows);
-        if (lineError) { status.className = 'error'; status.textContent = 'Lines save fail: ' + lineError.message; return; }
+      let supplierId;
+      const { data: ex } = await db.from('suppliers').select('id').eq('name', c.supplier.trim()).maybeSingle();
+      if (ex) supplierId = ex.id;
+      else {
+        const { data: cr, error } = await db.from('suppliers').insert({ name: c.supplier.trim() }).select().single();
+        if (error) return msg('Supplier save fail: ' + error.message);
+        supplierId = cr.id;
       }
 
-      status.className = 'ok';
-      status.textContent = 'Saved! Bill id: ' + bill.id + (problem ? ' (problem: ' + problem + ')' : '');
+      const { data: bill, error: be } = await db.from('bills').insert({
+        batch_id: batchId, supplier_id: supplierId,
+        bill_number: c.bill_number || null, bill_date: c.bill_date || null,
+        total: Number(c.total) || 0, lines_total: linesTotal(c),
+        file_path: 'uploads/' + c.file.name, ocr_text: c.ocr_text,
+        status: 'saved', problem: null, saved_at: new Date().toISOString()
+      }).select().single();
+      if (be) return msg('Bill save fail: ' + be.message);
+
+      if (c.lines.length) {
+        const rows = c.lines.map(l => ({ bill_id: bill.id, description: l.description || '', amount: Number(l.amount) || 0 }));
+        const { error: le } = await db.from('bill_lines').insert(rows);
+        if (le) return msg('Lines save fail: ' + le.message);
+      }
+
+      c.saved_bill_id = bill.id;
+      c.status = 'saved';
+      dbKeys.add(keyOf(c));
+      return true;
+    }
+
+    async function saveOne(c) {
+      if (person.role !== 'accountant') return msg('Accountant mattum save panna mudiyum.');
+      const p = computeProblem(c);
+      if (p) { renderCards(); return msg('Fix pannunga: ' + p); }
+      if (await insertBill(c)) { renderCards(); msg('Saved! Bill id: ' + c.saved_bill_id, 'ok'); }
+    }
+
+    async function saveAllClean() {
+      if (person.role !== 'accountant') return msg('Accountant mattum save panna mudiyum.');
+      let saved = 0;
+      for (const c of cards) {
+        if (c.saved_bill_id || c.status !== 'ready') continue;
+        if (computeProblem(c)) continue;
+        if (await insertBill(c)) saved++;
+        renderCards();
+      }
+      msg(saved + ' clean bills saved. Red cards-ah review panni, Save pannunga.', 'ok');
+    }
+
+    function renderCards() {
+      cards.forEach(c => {
+        if (!c.saved_bill_id && c.status !== 'failed' && c.status !== 'reading' && c.status !== 'waiting') {
+          c.problem = computeProblem(c);
+          c.status = c.problem ? 'problem' : 'ready';
+        }
+      });
+
+      const box = $('cards');
+      box.innerHTML = '';
+      cards.forEach(c => {
+        const cls = c.saved_bill_id ? 'saved' : c.status === 'failed' ? 'failed' : c.problem ? 'problem' : '';
+        const div = document.createElement('div');
+        div.className = 'card ' + cls;
+        const label = c.saved_bill_id ? 'saved (id ' + c.saved_bill_id + ')' : c.status;
+        div.innerHTML = '<b>' + esc(c.file.name) + '</b> — <small>' + label + '</small>' +
+          (c.problem && !c.saved_bill_id ? '<div class="error">' + esc(c.problem) + '</div>' : '') +
+          (c.status === 'failed' ? '<div class="error">' + esc(c.aiNote) + '</div>' : '');
+
+        if (!['waiting', 'reading', 'failed'].includes(c.status) || c.saved_bill_id) {
+          const fields = [['supplier', 'Supplier', 'text'], ['bill_number', 'Bill number', 'text'],
+                          ['bill_date', 'Date (YYYY-MM-DD)', 'text'], ['total', 'Total', 'number']];
+          fields.forEach(([key, label, type]) => {
+            const lab = document.createElement('label'); lab.textContent = label;
+            const inp = document.createElement('input');
+            inp.type = type; inp.value = c[key] ?? '';
+            inp.disabled = !!c.saved_bill_id || person.role !== 'accountant';
+            inp.addEventListener('change', () => { c[key] = type === 'number' ? Number(inp.value) || 0 : inp.value; renderCards(); });
+            div.appendChild(lab); div.appendChild(inp);
+          });
+          const lt = document.createElement('small');
+          lt.textContent = 'Lines total: ₹' + linesTotal(c) + ' (' + c.lines.map(l => l.description + ' ' + l.amount).join(', ') + ')';
+          div.appendChild(lt);
+
+          if (!c.saved_bill_id && person.role === 'accountant') {
+            const b = document.createElement('button');
+            b.textContent = 'Save';
+            b.onclick = () => saveOne(c);
+            div.appendChild(document.createElement('br'));
+            div.appendChild(b);
+          }
+        }
+        box.appendChild(div);
+      });
+    }
+
+    function exportExcel() {
+      if (!cards.length) return msg('Modhalla batch process pannunga.');
+      cards.forEach(c => { if (!c.saved_bill_id) c.problem = computeProblem(c); });
+      const rows = cards.map(c => ({
+        Supplier: c.supplier, 'Bill number': c.bill_number, Date: c.bill_date,
+        Total: c.total, Status: c.saved_bill_id ? 'saved' : c.status,
+        Problem: c.saved_bill_id ? '' : (c.problem || '')
+      }));
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Batch');
+      XLSX.writeFile(wb, 'billdrop-batch.xlsx');
+    }
+    
+    async function loadTotals() {
+      const [{ data: sups }, { data: bills }] = await Promise.all([
+        db.from('suppliers').select('id, name'),
+        db.from('bills').select('supplier_id, total, saved_at').eq('status', 'saved')
+      ]);
+      const names = Object.fromEntries((sups || []).map(s => [s.id, s.name]));
+      const now = new Date();
+      const sums = {};
+      (bills || []).forEach(b => {
+        const d = new Date(b.saved_at);
+        if (d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()) {
+          sums[b.supplier_id] = round2((sums[b.supplier_id] || 0) + Number(b.total));
+        }
+      });
+      $('totals').innerHTML = Object.entries(sums)
+        .map(([id, t]) => '<li>' + esc(names[id]) + ': ₹' + t + '</li>').join('')
+        || '<li>Indha maasam saved bills illai</li>';
     }
 
     $('login-btn').addEventListener('click', login);
     $('logout-btn').addEventListener('click', logout);
-    $('read-btn').addEventListener('click', readBill);
-    $('save-btn').addEventListener('click', saveBill);
-    $('add-line-btn').addEventListener('click', () => { addLine('', ''); runChecks(); });
-    $('f-total').addEventListener('input', runChecks);
+    $('process-btn').addEventListener('click', processBatch);
+    $('save-all-btn').addEventListener('click', saveAllClean);
+    $('excel-btn').addEventListener('click', exportExcel);
+    $('totals-btn').addEventListener('click', loadTotals);
   </script>
 </body>
 </html>
