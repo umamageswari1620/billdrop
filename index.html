@@ -145,8 +145,7 @@
           ocr_text: text,
           status: 'ready'
         })
-        .select()
-        .single();
+        .select().single();
 
       if (billError) {
         status.className = 'error';
