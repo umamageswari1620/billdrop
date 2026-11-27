@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BillDrop</title>
+  <title>BillDrop - Supplier Bill Processing</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -11,7 +11,10 @@
     body { font-family: Arial, sans-serif; max-width: 680px; margin: 40px auto; padding: 0 16px; }
     input { display: block; width: 100%; margin: 4px 0 8px; padding: 6px; box-sizing: border-box; }
     button { padding: 8px 14px; margin: 6px 6px 6px 0; }
-    .error { color: #b00020; } .ok { color: #0a6b2d; } .warn { color: #b26a00; }
+    .error { color: #b00020; }
+    .ok { color: #0a6b2d; }
+    .warn { color: #b26a00; }
+    .notice { background: #fff8e1; border: 1px solid #f0c040; padding: 8px; border-radius: 6px; font-size: 14px; }
     .box { border: 1px solid #ddd; padding: 12px; margin-top: 12px; border-radius: 6px; }
     .card { border: 2px solid #ccc; padding: 10px; margin: 10px 0; border-radius: 6px; }
     .card.problem { border-color: #b00020; }
@@ -22,7 +25,8 @@
 </head>
 <body>
   <h1>BillDrop</h1>
-  <p>Supplier bills-ah clean records-aa maathunga, minutes-la.</p>
+  <p>Turn Supplier bills into clean, checked records in minutes.</p>
+  <p class="notice">Practice project. Please use made-up bills only. Do not upload real bills, names, phone numbers or addresses.</p>
 
   <div id="login-box">
     <h2>Login</h2>
@@ -48,7 +52,7 @@
     </div>
 
     <div class="box">
-      <h2>Supplier totals (indha maasam)</h2>
+      <h2>Supplier totals (this month)</h2>
       <button id="totals-btn">Load totals</button>
       <ul id="totals"></ul>
     </div>
@@ -71,24 +75,27 @@
     const round2 = n => Math.round(n * 100) / 100;
     const linesTotal = c => round2(c.lines.reduce((s, l) => s + (Number(l.amount) || 0), 0));
     const msg = (t, cls = 'error') => { $('batch-msg').className = cls; $('batch-msg').textContent = t; };
+
     async function login() {
       $('message').textContent = '';
       const { data, error } = await db.auth.signInWithPassword({
         email: $('email').value.trim(), password: $('password').value
       });
-      if (error) { $('message').textContent = 'Login fail: ' + error.message; return; }
+      if (error) { $('message').textContent = 'Login failed: ' + error.message; return; }
 
       const { data: p, error: pe } = await db.from('people')
         .select('id, name, email, role').eq('login_id', data.user.id).maybeSingle();
-      if (pe) { $('message').textContent = 'People read error: ' + pe.message; await db.auth.signOut(); return; }
-      if (!p) { $('message').textContent = 'Intha account BillDrop people list-la illai.'; await db.auth.signOut(); return; }
+      if (pe) { $('message').textContent = 'Could not read people table: ' + pe.message; await db.auth.signOut(); return; }
+      if (!p) { $('message').textContent = 'This account is not in the BillDrop people list.'; await db.auth.signOut(); return; }
 
       session = data.session; person = p;
       $('user-email').textContent = p.email;
       $('user-role').textContent = p.role;
       if (p.role !== 'accountant') {
-        $('process-btn').disabled = true; $('save-all-btn').disabled = true;
-        msg('Manager-ku upload/save permission illai.', 'warn');
+        $('process-btn').disabled = true;
+        $('save-all-btn').disabled = true;
+        $('batch-files').disabled = true;
+        msg('Managers do not have upload or save permission.', 'warn');
       }
       $('login-box').style.display = 'none';
       $('info-box').style.display = 'block';
@@ -99,6 +106,7 @@
       session = null; person = null; batchId = null; cards = [];
       $('password').value = '';
       $('cards').innerHTML = '';
+      $('batch-msg').textContent = '';
       $('info-box').style.display = 'none';
       $('login-box').style.display = 'block';
     }
@@ -115,15 +123,15 @@
     function computeProblem(c) {
       const probs = [];
       if (c.aiNote) probs.push(c.aiNote);
-      if (!c.supplier.trim()) probs.push('Supplier name illai');
+      if (!c.supplier.trim()) probs.push('Supplier name is missing');
       const diff = round2((Number(c.total) || 0) - linesTotal(c));
       if (Math.abs(diff) > 1) probs.push('Total is off by ₹' + Math.abs(diff));
       if (c.bill_number && c.supplier) {
         const k = keyOf(c);
-        if (dbKeys.has(k)) probs.push('Already entered (database-la irukku)');
+        if (dbKeys.has(k)) probs.push('Already entered (already in database)');
         const i = cards.indexOf(c);
-        const earlier = cards.slice(0, i).some(o => o.status !== 'failed' && o.bill_number && keyOf(o) === k);
-        if (earlier) probs.push('Same batch-la already irukku');
+        const earlier = cards.slice(0, i).some(o => !o.saved_bill_id && o.status !== 'failed' && o.bill_number && keyOf(o) === k);
+        if (earlier) probs.push('Duplicate within this batch');
       }
       return probs.join(' | ');
     }
@@ -137,26 +145,35 @@
 
           const res = await fetch(SUPABASE_URL + '/functions/v1/parse-bill', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY,
-                       'Authorization': 'Bearer ' + session.access_token },
+            headers: {
+              'Content-Type': 'application/json',
+              'apikey': SUPABASE_KEY,
+              'Authorization': 'Bearer ' + session.access_token
+            },
             body: JSON.stringify({ text: c.ocr_text })
           });
           const json = await res.json();
 
           if (!json.ok) {
-            c.aiNote = 'AI fields edukka mudiyala, kaiyaala type pannunga';
+            c.aiNote = 'AI could not read the fields. Please type them manually.';
             c.supplier = ''; c.bill_number = ''; c.bill_date = ''; c.total = 0; c.lines = [];
           } else {
             const p = json.parsed;
+            c.aiNote = '';
             c.supplier = p.supplier || '';
             c.bill_number = p.bill_number || '';
             c.bill_date = p.bill_date || '';
             c.total = Number(p.total) || 0;
             c.lines = Array.isArray(p.lines) ? p.lines : [];
           }
+          c.status = 'ready';
           return;
         } catch (e) {
-          if (attempt === 3) { c.status = 'failed'; c.aiNote = 'Read fail: ' + e.message; return; }
+          if (attempt === 3) {
+            c.status = 'failed';
+            c.aiNote = 'Read failed: ' + e.message;
+            return;
+          }
           await new Promise(r => setTimeout(r, 1500));
         }
       }
@@ -164,32 +181,32 @@
 
     async function processBatch() {
       const files = [...$('batch-files').files];
-      if (!files.length) return msg('Bill files select pannunga.');
-      if (files.length > 20) return msg('Oru murai max 20 files.');
+      if (!files.length) return msg('Please select bill files.');
+      if (files.length > 20) return msg('Maximum 20 files per batch.');
 
       $('process-btn').disabled = true;
       batchId = null; cards = [];
       await loadDbKeys();
       files.forEach((f, i) => cards.push({
         i, file: f, status: 'waiting', supplier: '', bill_number: '', bill_date: '',
-        total: 0, lines: [], ocr_text: '', aiNote: '', saved_bill_id: null
+        total: 0, lines: [], ocr_text: '', aiNote: '', saved_bill_id: null, problem: ''
       }));
       renderCards();
 
       for (let n = 0; n < cards.length; n++) {
-        msg('Processing ' + (n + 1) + ' / ' + cards.length + ' ...', 'warn');
+        msg('Processing ' + (n + 1) + ' of ' + cards.length + ' ...', 'warn');
         await processCard(cards[n]);
         renderCards();
       }
       renderCards();
-      msg('Batch mudinjiduchu.', 'ok');
+      msg('Batch finished. Review the red cards and click Save.', 'ok');
       $('process-btn').disabled = false;
     }
-          
+
     async function insertBill(c) {
       if (!batchId) {
         const { data, error } = await db.from('batches').insert({ uploaded_by: person.id }).select().single();
-        if (error) return msg('Batch save fail: ' + error.message);
+        if (error) { msg('Batch save failed: ' + error.message); return false; }
         batchId = data.id;
       }
 
@@ -198,7 +215,7 @@
       if (ex) supplierId = ex.id;
       else {
         const { data: cr, error } = await db.from('suppliers').insert({ name: c.supplier.trim() }).select().single();
-        if (error) return msg('Supplier save fail: ' + error.message);
+        if (error) { msg('Supplier save failed: ' + error.message); return false; }
         supplierId = cr.id;
       }
 
@@ -209,12 +226,14 @@
         file_path: 'uploads/' + c.file.name, ocr_text: c.ocr_text,
         status: 'saved', problem: null, saved_at: new Date().toISOString()
       }).select().single();
-      if (be) return msg('Bill save fail: ' + be.message);
+      if (be) { msg('Bill save failed: ' + be.message); return false; }
 
       if (c.lines.length) {
-        const rows = c.lines.map(l => ({ bill_id: bill.id, description: l.description || '', amount: Number(l.amount) || 0 }));
+        const rows = c.lines.map(l => ({
+          bill_id: bill.id, description: l.description || '', amount: Number(l.amount) || 0
+        }));
         const { error: le } = await db.from('bill_lines').insert(rows);
-        if (le) return msg('Lines save fail: ' + le.message);
+        if (le) { msg('Line items save failed: ' + le.message); return false; }
       }
 
       c.saved_bill_id = bill.id;
@@ -224,14 +243,14 @@
     }
 
     async function saveOne(c) {
-      if (person.role !== 'accountant') return msg('Accountant mattum save panna mudiyum.');
+      if (person.role !== 'accountant') return msg('Only accountants can save bills.');
       const p = computeProblem(c);
-      if (p) { renderCards(); return msg('Fix pannunga: ' + p); }
+      if (p) { renderCards(); return msg('Please fix: ' + p); }
       if (await insertBill(c)) { renderCards(); msg('Saved! Bill id: ' + c.saved_bill_id, 'ok'); }
     }
 
     async function saveAllClean() {
-      if (person.role !== 'accountant') return msg('Accountant mattum save panna mudiyum.');
+      if (person.role !== 'accountant') return msg('Only accountants can save bills.');
       let saved = 0;
       for (const c of cards) {
         if (c.saved_bill_id || c.status !== 'ready') continue;
@@ -239,41 +258,52 @@
         if (await insertBill(c)) saved++;
         renderCards();
       }
-      msg(saved + ' clean bills saved. Red cards-ah review panni, Save pannunga.', 'ok');
+      msg(saved + ' clean bills saved. Review the red cards and save them manually.', 'ok');
     }
-
+    
     function renderCards() {
       cards.forEach(c => {
-        if (!c.saved_bill_id && c.status !== 'failed' && c.status !== 'reading' && c.status !== 'waiting') {
-          c.problem = computeProblem(c);
-          c.status = c.problem ? 'problem' : 'ready';
-        }
+        if (c.saved_bill_id || c.status === 'failed' || c.status === 'reading' || c.status === 'waiting') return;
+        c.problem = computeProblem(c);
+        c.status = c.problem ? 'problem' : 'ready';
       });
 
       const box = $('cards');
       box.innerHTML = '';
       cards.forEach(c => {
-        const cls = c.saved_bill_id ? 'saved' : c.status === 'failed' ? 'failed' : c.problem ? 'problem' : '';
+        const cls = c.saved_bill_id ? 'saved' : c.status === 'failed' ? 'failed' : c.status === 'problem' ? 'problem' : '';
         const div = document.createElement('div');
         div.className = 'card ' + cls;
         const label = c.saved_bill_id ? 'saved (id ' + c.saved_bill_id + ')' : c.status;
-        div.innerHTML = '<b>' + esc(c.file.name) + '</b> — <small>' + label + '</small>' +
+        div.innerHTML = '<b>' + esc(c.file.name) + '</b> — <small>' + esc(label) + '</small>' +
           (c.problem && !c.saved_bill_id ? '<div class="error">' + esc(c.problem) + '</div>' : '') +
           (c.status === 'failed' ? '<div class="error">' + esc(c.aiNote) + '</div>' : '');
 
         if (!['waiting', 'reading', 'failed'].includes(c.status) || c.saved_bill_id) {
-          const fields = [['supplier', 'Supplier', 'text'], ['bill_number', 'Bill number', 'text'],
-                          ['bill_date', 'Date (YYYY-MM-DD)', 'text'], ['total', 'Total', 'number']];
+          const fields = [
+            ['supplier', 'Supplier', 'text'],
+            ['bill_number', 'Bill number', 'text'],
+            ['bill_date', 'Date (YYYY-MM-DD)', 'text'],
+            ['total', 'Total', 'number']
+          ];
           fields.forEach(([key, label, type]) => {
-            const lab = document.createElement('label'); lab.textContent = label;
+            const lab = document.createElement('label');
+            lab.textContent = label;
             const inp = document.createElement('input');
-            inp.type = type; inp.value = c[key] ?? '';
+            inp.type = type;
+            inp.value = c[key] ?? '';
             inp.disabled = !!c.saved_bill_id || person.role !== 'accountant';
-            inp.addEventListener('change', () => { c[key] = type === 'number' ? Number(inp.value) || 0 : inp.value; renderCards(); });
-            div.appendChild(lab); div.appendChild(inp);
+            inp.addEventListener('change', () => {
+              c[key] = type === 'number' ? Number(inp.value) || 0 : inp.value;
+              renderCards();
+            });
+            div.appendChild(lab);
+            div.appendChild(inp);
           });
+
           const lt = document.createElement('small');
-          lt.textContent = 'Lines total: ₹' + linesTotal(c) + ' (' + c.lines.map(l => l.description + ' ' + l.amount).join(', ') + ')';
+          lt.textContent = 'Lines total: ₹' + linesTotal(c) + ' (' +
+            c.lines.map(l => (l.description || '') + ' ' + (l.amount || 0)).join(', ') + ')';
           div.appendChild(lt);
 
           if (!c.saved_bill_id && person.role === 'accountant') {
@@ -287,13 +317,16 @@
         box.appendChild(div);
       });
     }
-
+    
     function exportExcel() {
-      if (!cards.length) return msg('Modhalla batch process pannunga.');
+      if (!cards.length) return msg('Please process a batch first.');
       cards.forEach(c => { if (!c.saved_bill_id) c.problem = computeProblem(c); });
       const rows = cards.map(c => ({
-        Supplier: c.supplier, 'Bill number': c.bill_number, Date: c.bill_date,
-        Total: c.total, Status: c.saved_bill_id ? 'saved' : c.status,
+        Supplier: c.supplier,
+        'Bill number': c.bill_number,
+        Date: c.bill_date,
+        Total: c.total,
+        Status: c.saved_bill_id ? 'saved' : c.status,
         Problem: c.saved_bill_id ? '' : (c.problem || '')
       }));
       const ws = XLSX.utils.json_to_sheet(rows);
@@ -301,7 +334,7 @@
       XLSX.utils.book_append_sheet(wb, ws, 'Batch');
       XLSX.writeFile(wb, 'billdrop-batch.xlsx');
     }
-    
+
     async function loadTotals() {
       const [{ data: sups }, { data: bills }] = await Promise.all([
         db.from('suppliers').select('id, name'),
@@ -318,7 +351,7 @@
       });
       $('totals').innerHTML = Object.entries(sums)
         .map(([id, t]) => '<li>' + esc(names[id]) + ': ₹' + t + '</li>').join('')
-        || '<li>Indha maasam saved bills illai</li>';
+        || '<li>No saved bills this month</li>';
     }
 
     $('login-btn').addEventListener('click', login);
