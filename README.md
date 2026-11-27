@@ -1,6 +1,6 @@
 # BillDrop
 
-Supplier bills-ah clean records-aa maathura tool.
+Supplier bills into clean, checked records in minutes.
 
 ## Live Link
 https://umamageswari1620.github.io/billdrop/
