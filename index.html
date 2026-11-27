@@ -25,7 +25,7 @@
 </head>
 <body>
   <h1>BillDrop</h1>
-  <p>Turn Supplier bills into clean, checked records in minutes.</p>
+  <p>Turn supplier bills into clean, checked records in minutes.</p>
   <p class="notice">Practice project. Please use made-up bills only. Do not upload real bills, names, phone numbers or addresses.</p>
 
   <div id="login-box">
@@ -74,8 +74,9 @@
     const esc = s => String(s ?? '').replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
     const round2 = n => Math.round(n * 100) / 100;
     const linesTotal = c => round2(c.lines.reduce((s, l) => s + (Number(l.amount) || 0), 0));
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
     const msg = (t, cls = 'error') => { $('batch-msg').className = cls; $('batch-msg').textContent = t; };
-
+    
     async function login() {
       $('message').textContent = '';
       const { data, error } = await db.auth.signInWithPassword({
@@ -135,48 +136,81 @@
       }
       return probs.join(' | ');
     }
+    
+    async function callAI(text) {
+      try {
+        const res = await fetch(SUPABASE_URL + '/functions/v1/parse-bill', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_KEY,
+            'Authorization': 'Bearer ' + session.access_token
+          },
+          body: JSON.stringify({ text })
+        });
+        const json = await res.json();
+        return json.ok ? json.parsed : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    // ---------- Backup reader: works on plain OCR text when AI is busy ----------
+    function fallbackParse(text) {
+      const lines = (text || '').split('\n').map(l => l.trim()).filter(Boolean);
+      const supplier = lines[0] || '';
+      const num = (text.match(/Bill\s*No\.?\s*[:\-]?\s*([A-Za-z0-9\-]+)/i) || [])[1] || '';
+      const date = (text.match(/(\d{4}-\d{2}-\d{2})/) || [])[1] || '';
+      const items = [];
+      let total = 0;
+      lines.forEach(l => {
+        const m = l.match(/^(.+?)\s+(\d[\d,]*)$/);
+        if (!m) return;
+        const label = m[1].trim();
+        const amt = Number(m[2].replace(/,/g, ''));
+        if (/total/i.test(label)) { total = amt; return; }
+        if (/bill|date/i.test(label)) return;
+        items.push({ description: label, amount: amt });
+      });
+      if (!total) total = items.reduce((s, i) => s + i.amount, 0);
+      return { supplier, bill_number: num, bill_date: date, lines: items, total };
+    }
+
+    function applyParsed(c, p) {
+      c.supplier = p.supplier || '';
+      c.bill_number = p.bill_number || '';
+      c.bill_date = p.bill_date || '';
+      c.total = Number(p.total) || 0;
+      c.lines = Array.isArray(p.lines) ? p.lines : [];
+    }
 
     async function processCard(c) {
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          c.status = 'reading'; renderCards();
-          const r = await Tesseract.recognize(c.file, 'eng');
-          c.ocr_text = r.data.text || '';
+      c.status = 'reading';
+      c.aiNote = '';
+      renderCards();
 
-          const res = await fetch(SUPABASE_URL + '/functions/v1/parse-bill', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'apikey': SUPABASE_KEY,
-              'Authorization': 'Bearer ' + session.access_token
-            },
-            body: JSON.stringify({ text: c.ocr_text })
-          });
-          const json = await res.json();
-
-          if (!json.ok) {
-            c.aiNote = 'AI could not read the fields. Please type them manually.';
-            c.supplier = ''; c.bill_number = ''; c.bill_date = ''; c.total = 0; c.lines = [];
-          } else {
-            const p = json.parsed;
-            c.aiNote = '';
-            c.supplier = p.supplier || '';
-            c.bill_number = p.bill_number || '';
-            c.bill_date = p.bill_date || '';
-            c.total = Number(p.total) || 0;
-            c.lines = Array.isArray(p.lines) ? p.lines : [];
-          }
-          c.status = 'ready';
-          return;
-        } catch (e) {
-          if (attempt === 3) {
-            c.status = 'failed';
-            c.aiNote = 'Read failed: ' + e.message;
-            return;
-          }
-          await new Promise(r => setTimeout(r, 1500));
-        }
+      try {
+        const r = await Tesseract.recognize(c.file, 'eng');
+        c.ocr_text = r.data.text || '';
+      } catch (e) {
+        c.status = 'failed';
+        c.aiNote = 'OCR failed: ' + e.message;
+        return;
       }
+
+      let parsed = null;
+      for (let attempt = 1; attempt <= 3 && !parsed; attempt++) {
+        parsed = await callAI(c.ocr_text);
+        if (!parsed && attempt < 3) await sleep(4000 * attempt);
+      }
+
+      if (parsed) {
+        applyParsed(c, parsed);
+      } else {
+        applyParsed(c, fallbackParse(c.ocr_text));
+        c.aiNote = 'AI was busy, so fields were read from OCR text. Please check before saving.';
+      }
+      c.status = 'ready';
     }
 
     async function processBatch() {
@@ -197,12 +231,13 @@
         msg('Processing ' + (n + 1) + ' of ' + cards.length + ' ...', 'warn');
         await processCard(cards[n]);
         renderCards();
+        await sleep(1500); // small gap to stay within free AI limits
       }
       renderCards();
       msg('Batch finished. Review the red cards and click Save.', 'ok');
       $('process-btn').disabled = false;
     }
-
+    
     async function insertBill(c) {
       if (!batchId) {
         const { data, error } = await db.from('batches').insert({ uploaded_by: person.id }).select().single();
@@ -260,7 +295,7 @@
       }
       msg(saved + ' clean bills saved. Review the red cards and save them manually.', 'ok');
     }
-    
+
     function renderCards() {
       cards.forEach(c => {
         if (c.saved_bill_id || c.status === 'failed' || c.status === 'reading' || c.status === 'waiting') return;
@@ -317,7 +352,7 @@
         box.appendChild(div);
       });
     }
-    
+
     function exportExcel() {
       if (!cards.length) return msg('Please process a batch first.');
       cards.forEach(c => { if (!c.saved_bill_id) c.problem = computeProblem(c); });
