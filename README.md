@@ -31,7 +31,7 @@ https://umamageswari1620.github.io/billdrop/
 - **Live link:** https://umamageswari1620.github.io/billdrop/
 - **2-minute video:** https://drive.google.com/file/d/1lGqjh9LIgOu2TuhxfFfHK0I66yadtUYn/view
 - **20-bill batch recording:** https://drive.google.com/file/d/1VkFDCk8L6rmhY_YTln4bCp1l8TZePHjs/view
-- **docs/AI_NOTES.pdf:** https://github.com/umamageswari1620/billdrop/blob/main/docs/AI_NOTES.pdf
+- **docs/AI_NOTES.pdf:** https://github.com/umamageswari1620/billdrop/blob/main/docs/AI_NOTES (1).pdf
 - **docs/SPEED.png:** https://github.com/umamageswari1620/billdrop/blob/main/docs/SPEED.png
 - **docs/PROGRESS.pdf:** https://github.com/umamageswari1620/billdrop/blob/main/docs/PROGRESS.pdf
 - **docs/REAL_USERS.pdf:** https://github.com/umamageswari1620/billdrop/blob/main/docs/REAL_USERS.pdf
