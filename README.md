@@ -29,8 +29,8 @@ https://umamageswari1620.github.io/billdrop/
 
 ## M4 deliverables
 - **Live link:** https://umamageswari1620.github.io/billdrop/
-- **2-minute video:** https://drive.google.com/file/d/11Gqjh9LIgOu2TuhxfFfHK0I66yadtUYn/view?usp=sharing
-- **20-bill batch recording:** https://drive.google.com/file/d/1VkFDCk8L6rmhY_YT1n4bCp118TZePHjs/view?usp=sharing
+- **2-minute video:** https://drive.google.com/file/d/1lGqjh9LIgOu2TuhxfFfHK0I66yadtUYn/view
+- **20-bill batch recording:** https://drive.google.com/file/d/1VkFDCk8L6rmhY_YTln4bCp1l8TZePHjs/view
 - **docs/AI_NOTES.pdf:** https://github.com/umamageswari1620/billdrop/blob/main/docs/AI_NOTES.pdf
 - **docs/SPEED.png:** https://github.com/umamageswari1620/billdrop/blob/main/docs/SPEED.png
 - **docs/PROGRESS.pdf:** https://github.com/umamageswari1620/billdrop/blob/main/docs/PROGRESS.pdf
