@@ -1,24 +1,22 @@
-#BillDrop
+## M3 status (honest)
 
- Supplier bills into clean, checked records in minutes.
+**Working**
+- Batch upload of up to 20 bills, with a card for each bill
+- OCR read and AI fields, with fallback reader when AI is busy
+- Wrong total check (bill-05: "Total is off by ₹1800")
+- Duplicate check against the database
+- Save All Clean Bills, and save each card one by one
+- Download Excel (billdrop-batch.xlsx)
+- Supplier totals for this month
 
-## Live Link
-https://umamageswari1620.github.io/billdrop/
+**Partly working**
+- AI reading sometimes fails (503, 429), so fields come from OCR and need checking
+- Supplier names: OCR spelling differences can create separate suppliers
 
-## Test Logins (made-up, demo only)
-- Accountant: accountant@example.com / password: Acc@2026billdrop
-- Manager: manager@example.com / password: Mahema1620
+**Not built yet**
+- 10 automated tests in GitHub Actions
+- AI draft message for wrong-total bills
+- Background processing (batch stops if the tab is closed)
 
-## What works (M2)
-- Supabase database: 5 tables, seed data (10 suppliers, 2 people, 1 batch, 1 October bill)
-- Login with email and password. Accountant and manager see their own role.
-- Row Level Security policies on the database
-
-## Partly works
-- Login shows only email and role after login.
-
-## Not built yet
-- Bill upload, OCR, AI reading, review screen, Excel export, supplier totals
-
-## Screen recording (60 seconds)
-https://drive.google.com/file/d/1UzdYQiVDYgtOZrfloDxa_f_KheOZc162/view?usp=sharing
+**Testers**
+- 10 people tried the tool. Feedback in `docs/REAL_USERS.pdf`.
