@@ -28,14 +28,14 @@ https://umamageswari1620.github.io/billdrop/
 - Background processing (batch stops if the tab is closed)
 
 ## M4 deliverables
-- **Live link:** https://umamageswari1620.github.io/billdrop/
-- **2-minute video:** https://drive.google.com/file/d/PASTE_VIDEO_ID_HERE/view?usp=sharing
-- **20-bill batch recording:** https://drive.google.com/file/d/PASTE_BATCH_VIDEO_ID_HERE/view?usp=sharing
-- **docs/AI_NOTES.pdf:** one thing AI got wrong, and how I caught it
-- **docs/SPEED.png:** PageSpeed Insights, desktop 99, mobile 90
-- **docs/PROGRESS.pdf:** https://github.com/umamageswari1620/billdrop/blob/main/docs/PROGRESS.pdf
-- **docs/REAL_USERS.pdf:** tester feedback (10 people)
-- **docs/PLAN.pdf:** 1-page plan
+- Live link:https://umamageswari1620.github.io/billdrop/
+- 2-minute video:https://drive.google.com/file/d/11Gqjh9LIgOu2TuhxfFfHK0I66yadtUYn/view?usp=sharing
+- 20-bill batch recording:https://drive.google.com/file/d/1VkFDCk8L6rmhY_YT1n4bCp118TZePHjs/view?usp=sharing
+- docs/AI_NOTES.pdf:https://github.com/umamageswari1620/billdrop/blob/main/docs/AI_NOTES.pdf
+- docs/SPEED.png:https://github.com/umamageswari1620/billdrop/blob/main/docs/SPEED.png
+- docs/PROGRESS.pdf:https://github.com/umamageswari1620/billdrop/blob/main/docs/PROGRESS.pdf
+- docs/REAL_USERS.pdf:https://github.com/umamageswari1620/billdrop/blob/main/docs/REAL_USERS.pdf
+- docs/PLAN.pdf:https://github.com/umamageswari1620/billdrop/blob/main/docs/PLAN.pdf
 
 ## Tech used
 HTML and JavaScript, Supabase (database, login, row level security), Tesseract.js (OCR), Gemini AI through a Supabase Edge Function.
